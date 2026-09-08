@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" role="img" aria-labelledby="jt jd">
+  <title id="jt">JOURIVA editorial horizon motif (optional)</title>
+  <desc id="d">Dotted horizon line with the eight-point star — an optional editorial/background element. Explicitly NOT part of the primary logo.</desc>
+  <!-- OPTIONAL editorial/background element (owner-approved exception).
+       Per brand fidelity rules the dotted horizon is REMOVED from the primary
+       logo; it may exist only as this separate optional asset. -->
+  <g stroke="#C86845" stroke-width="2" stroke-linecap="round" stroke-dasharray="0.1 7" fill="none">
+    <line x1="8" y1="30" x2="196" y2="30"/>
+  </g>
+  <path fill="#C86845" d="M216 12L218.06 17.85L223.56 15.11L220.83 20.6L226.68 22.67L220.83 24.73L223.56 30.23L218.06 27.49L216 33.34L213.94 27.49L208.44 30.23L211.17 24.73L205.32 22.67L211.17 20.6L208.44 15.11L213.94 17.85Z"/>
+</svg>

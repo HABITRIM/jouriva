@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="jt jd">
+  <title id="jt">JOURIVA favicon</title>
+  <desc id="d">JOURIVA symbol on a white rounded tile — light-context favicon master.</desc>
+  <!-- Favicon master (light tile). Simplified symbol, enlarged for 16px legibility.
+       Regenerate rasters: node scripts/build-favicons.mjs -->
+  <rect width="128" height="128" rx="28" fill="#FFFFFF"/>
+  <rect x="1" y="1" width="126" height="126" rx="27" fill="none" stroke="#E9DECD" stroke-width="2"/>
+  <g transform="translate(-9.34 2.2) scale(1.15)">
+    <defs>
+      <clipPath id="fsky"><rect x="0" y="0" width="128" height="66"/></clipPath>
+      <clipPath id="fland"><rect x="0" y="66" width="128" height="62"/></clipPath>
+    </defs>
+    <path fill="#0D2B45" clip-path="url(#fsky)" d="M71 34H85V74C85 89.5 75.5 98.5 62.5 98.5C51.5 98.5 42.5 92.3 38.5 82.3L38.5 73.5L52 69.5C53.6 75.6 57.3 78.6 62.5 78.6C68.7 78.6 71 74.6 71 68.5Z"/>
+    <path fill="#C86845" clip-path="url(#fland)" d="M71 34H85V74C85 89.5 75.5 98.5 62.5 98.5C51.5 98.5 42.5 92.3 38.5 82.3L38.5 73.5L52 69.5C53.6 75.6 57.3 78.6 62.5 78.6C68.7 78.6 71 74.6 71 68.5Z"/>
+    <path fill="#C86845" d="M78 9L80.3 14.46L85.78 12.22L83.54 17.7L89 20L83.54 22.3L85.78 27.78L80.3 25.54L78 31L75.7 25.54L70.22 27.78L72.46 22.3L67 20L72.46 17.7L70.22 12.22L75.7 14.46Z"/>
+  </g>
+</svg>

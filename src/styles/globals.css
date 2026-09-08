@@ -1,0 +1,154 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   JOURIVA design tokens (Tailwind CSS v4 @theme)
+   Brand palette, typography hooks and derived shades.
+   Full documentation: docs/05-brand-tokens.md
+   ──────────────────────────────────────────────────────────────────────────── */
+@theme {
+  /* Brand palette */
+  --color-navy: #0d2b45;
+  --color-terracotta: #c86845;
+  --color-sand: #f6efe5;
+  --color-charcoal: #1a1a1a;
+
+  /* Derived / accessibility-driven shades */
+  --color-navy-700: #14395c;
+  --color-navy-600: #1d4a73;
+  --color-navy-100: #dce6ef;
+  --color-navy-50: #eef3f8;
+  --color-terracotta-ink: #a34d2e; /* small text on light bg — AA contrast */
+  --color-terracotta-dark: #8a3f23;
+  --color-terracotta-soft: #f4e1d7;
+  --color-terracotta-bright: #e09170; /* small text on navy — AA contrast */
+  --color-sand-dark: #e9decd;
+  --color-ink-soft: #4a4a48;
+
+  /* Typography hooks (resolved per-locale below; fonts via next/font) */
+  --font-display: var(--font-playfair), Georgia, "Times New Roman", serif;
+  --font-body: var(--font-inter), system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Arabic locale swaps display + body typefaces to Tajawal (Playfair/Inter
+   have no Arabic glyphs). Utilities reference the CSS variables, so the
+   swap is automatic for html[lang="ar"]. */
+html[lang="ar"] {
+  --font-display: var(--font-tajawal), Tahoma, sans-serif;
+  --font-body: var(--font-tajawal), Tahoma, sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    font-family: var(--font-body);
+    color: var(--color-charcoal);
+    background-color: #ffffff;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Accessible, visible focus everywhere (keyboard navigation) */
+  :focus-visible {
+    outline: 2px solid var(--color-terracotta-ink);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background: var(--color-terracotta-soft);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .container-jouriva {
+    @apply mx-auto w-full max-w-[76rem] px-4 sm:px-6 lg:px-8;
+  }
+
+  /* Skip link — visually hidden until focused */
+  .skip-link {
+    position: fixed;
+    top: -4rem;
+    inset-inline-start: 1rem;
+    z-index: 100;
+    background: var(--color-navy);
+    color: #fff;
+    padding: 0.625rem 1.25rem;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    transition: top 0.2s ease;
+  }
+  .skip-link:focus {
+    top: 1rem;
+  }
+
+  /* Editorial kicker (small uppercase section label) */
+  .kicker {
+    @apply text-xs font-bold uppercase;
+    letter-spacing: 0.14em;
+    color: var(--color-terracotta-ink);
+  }
+  .navy-section .kicker {
+    color: var(--color-terracotta-bright);
+  }
+
+  /* Dark navy band — a design section, NOT a global dark mode */
+  .navy-section {
+    background-color: var(--color-navy);
+    color: var(--color-sand);
+  }
+
+  /* Subtle Moroccan-inspired 8-point star motif (decorative, CSS-tiled,
+     swappable, and NOT a recreation of the logo) */
+  .bg-star-motif {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%230D2B45' stroke-opacity='0.07'%3E%3Crect x='14' y='14' width='20' height='20'/%3E%3Crect x='14' y='14' width='20' height='20' transform='rotate(45 24 24)'/%3E%3C/g%3E%3C/svg%3E");
+  }
+  .navy-section.bg-star-motif,
+  .bg-star-motif-light {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cg fill='none' stroke='%23F6EFE5' stroke-opacity='0.08'%3E%3Crect x='14' y='14' width='20' height='20'/%3E%3Crect x='14' y='14' width='20' height='20' transform='rotate(45 24 24)'/%3E%3C/g%3E%3C/svg%3E");
+  }
+
+  /* Editorial article body */
+  .prose-jouriva p {
+    max-width: 65ch;
+    line-height: 1.8;
+    margin-block: 1.1rem;
+  }
+
+  /* Card with stretched link: whole card clickable, one real link inside */
+  .card-hover {
+    @apply transition duration-200;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .card-hover:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px -12px rgb(13 43 69 / 0.25);
+    }
+  }
+
+  /* Ad placeholder frame (Phase 1 demo) */
+  .ad-frame {
+    @apply flex items-center justify-center border border-dashed rounded-lg text-center;
+    border-color: var(--color-sand-dark);
+    background: var(--color-sand);
+    color: var(--color-ink-soft);
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+}

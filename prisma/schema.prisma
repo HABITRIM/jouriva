@@ -1,0 +1,940 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// JOURIVA — Relational data model
+// Phase 1: foundation (locale-independent facts + per-locale translations).
+// Phase 2: CMS + Article Engine extensions, per the authorized spec:
+//   · Editorial workflow/verification/publishing live on ArticleTranslation
+//     (each locale publishes independently — spec §4/§5).
+//   · New: User/Session (auth), ArticleRevision, ArticleTransition (audit),
+//     Redirect (per-locale SEO redirects), media rights metadata.
+//   · All Phase 1 entities and relationships are preserved (no parallel
+//     content systems; ArticleTranslation is the single editorial unit).
+// Validate: npx prisma validate   Migrate: npx prisma migrate dev
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum Direction {
+  ltr
+  rtl
+}
+
+// Editorial workflow states (spec §6). Transitions are guarded in code —
+// see src/lib/cms/workflow.ts. AI must never advance content past APPROVED;
+// PUBLISH is always an explicit human action.
+enum WorkflowStatus {
+  DRAFT
+  IN_REVIEW
+  FACT_CHECK
+  SEO_REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum VerificationStatus {
+  VERIFIED
+  NEEDS_REVIEW
+  OUTDATED
+  ARCHIVED
+}
+
+enum Role {
+  ADMIN
+  EDITOR
+  AUTHOR
+  REVIEWER
+}
+
+enum DestinationType {
+  COUNTRY
+  CITY
+  REGION
+  ATTRACTION
+  VENUE
+}
+
+enum UpdateType {
+  AIRLINE_ROUTE
+  VISA_CHANGE
+  AIRPORT_CHANGE
+  HOTEL_OPENING
+  SPORTS_ANNOUNCEMENT
+  RAILWAY_CHANGE
+  ENTRY_REQUIREMENT
+  OTHER
+}
+
+enum OfferVertical {
+  FLIGHTS
+  HOTELS
+  APARTMENTS
+  TOURS
+  EVENT_TICKETS
+  INSURANCE
+  TRAVEL_CARD
+  ESIM
+  TRAVEL_GEAR
+  TRAINS
+  STUDY_ABROAD_SERVICES
+}
+
+enum AdPlacement {
+  HEADER
+  SIDEBAR
+  IN_CONTENT
+  BETWEEN_SECTIONS
+  MOBILE
+  MOBILE_STICKY
+}
+
+enum SubscriptionStatus {
+  PENDING
+  ACTIVE
+  UNSUBSCRIBED
+}
+
+// ── Auth: users & sessions (Phase 2) ─────────────────────────────────────────
+// Credentials-based dev auth with server-side sessions (scrypt hashes,
+// HTTP-only signed cookies). Provider integration (OAuth/SSO) plugs into
+// src/lib/auth without changing the permission model (docs/12-auth-and-permissions.md).
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String
+  passwordHash   String?
+  role           Role      @default(AUTHOR)
+  isActive       Boolean   @default(true)
+  authorProfileId String?  @unique
+  authorProfile  Author?   @relation(fields: [authorProfileId], references: [id])
+  sessions       Session[]
+  createdRedirects Redirect[]
+  mediaUploaded  MediaAsset[]
+  transitions    ArticleTransition[]
+  revisions      ArticleRevision[]
+  verifications  ArticleTranslation[] @relation("TranslationVerifier")
+  destinationVerifications DestinationTranslation[] @relation("DestinationVerifier")
+  updatedAt      DateTime  @updatedAt
+  createdAt      DateTime  @default(now())
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique // sha256(token) — raw token only ever lives in the cookie
+  userId    String
+  expiresAt DateTime
+  userAgent String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ── Languages / translation infrastructure ───────────────────────────────────
+
+model Locale {
+  code        String    @id // "ar" | "en" | "es"
+  englishName String
+  nativeName  String
+  direction   Direction
+  isDefault   Boolean   @default(false)
+  isActive    Boolean   @default(true)
+  fallback    String?
+  htmlLang    String
+  hreflangFor String?
+}
+
+// Optional explicit grouping anchor for translation sets of any entity type.
+// Base entities also carry translationGroupId directly for convenience.
+model TranslationGroup {
+  id         String   @id @default(cuid())
+  entityType String
+  createdAt  DateTime @default(now())
+}
+
+// ── Geography: countries / cities / destinations ─────────────────────────────
+
+model Country {
+  id                String   @id @default(cuid())
+  iso2              String   @unique
+  iso3              String?
+  region            String?
+  isFeatured        Boolean  @default(false)
+  translations      CountryTranslation[]
+  cities            City[]
+  destinations      Destination[]
+  editionHost       SportEventEditionHost[]
+  studyDestinations StudyDestination[]
+}
+
+model CountryTranslation {
+  id                String  @id @default(cuid())
+  countryId         String
+  locale            String
+  name              String
+  slug              String
+  description       String?
+  seoTitle          String?
+  metaDescription   String?
+  canonicalOverride String?
+  country           Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@unique([locale, slug])
+  @@unique([countryId, locale])
+}
+
+model City {
+  id           String   @id @default(cuid())
+  countryId    String
+  lat          Float?
+  lon          Float?
+  isFeatured   Boolean  @default(false)
+  country      Country  @relation(fields: [countryId], references: [id])
+  translations CityTranslation[]
+  venues       Venue[]
+  articles     Article[]
+  destinations Destination[]
+}
+
+model CityTranslation {
+  id                String  @id @default(cuid())
+  cityId            String
+  locale            String
+  name              String
+  slug              String
+  headline          String?
+  description       String?
+  seoTitle          String?
+  metaDescription   String?
+  canonicalOverride String?
+  city              City    @relation(fields: [cityId], references: [id], onDelete: Cascade)
+
+  @@unique([locale, slug])
+  @@unique([cityId, locale])
+}
+
+// Curated travel destination hubs (country/city/region/attraction/venue level).
+// Phase 3: extended with editorial lifecycle, hero/gallery media, ordering.
+// Hierarchy is structural (countryId / cityId FKs) — cycles are impossible by
+// construction; breadcrumb chains are additionally depth-guarded in code.
+model Destination {
+  id                String   @id @default(cuid())
+  type              DestinationType
+  countryId         String?
+  cityId            String?
+  isFeatured        Boolean  @default(false)
+  isActive          Boolean  @default(true) // archive/restore without deletion
+  sortOrder         Int      @default(0) // editorial ordering within lists
+  heroAssetId       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  country           Country? @relation(fields: [countryId], references: [id])
+  city              City?    @relation(fields: [cityId], references: [id])
+  heroAsset         MediaAsset? @relation("DestinationHero", fields: [heroAssetId], references: [id])
+  translations      DestinationTranslation[]
+  articles          Article[] // legacy Phase 1 column (unused — see ArticleDestination)
+  articleLinks      ArticleDestination[]
+  gallery           DestinationMedia[]
+  topics            DestinationTopic[]
+  linkTargets       ContentLink[]      @relation("LinkDestinationTarget")
+
+  @@index([countryId])
+  @@index([cityId])
+  @@index([isFeatured, sortOrder])
+}
+
+// One independently-editable, independently-publishable language version
+// (same philosophy as ArticleTranslation). Only PUBLISHED + quality-gated
+// translations become indexable landing pages (thin-content protection).
+model DestinationTranslation {
+  id                 String             @id @default(cuid())
+  destinationId      String
+  locale             String
+  name               String
+  slug               String
+  tagline            String?
+  description        String?            // short editorial introduction (standfirst)
+  blocks             Json?              // structured editorial core (overview / why visit / practical) — same block schema as articles
+  seoTitle           String?
+  metaDescription    String?
+  canonicalOverride  String?
+  noindex            Boolean            @default(false)
+  faqGroupId         String?
+  // Independent per-locale publishing (human-gated, EDITOR+; no AI path)
+  workflowStatus     WorkflowStatus     @default(DRAFT)
+  publishedAt        DateTime?
+  archivedAt         DateTime?
+  // Verification — reuses the Phase 2 architecture (spec §16)
+  verificationStatus VerificationStatus?
+  lastVerifiedAt     DateTime?
+  verifiedById       String?
+  verificationNotes  String?
+  warningEnabled     Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime @updatedAt
+  destination        Destination        @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+  faqGroup           FaqGroup?          @relation("DestinationFaq", fields: [faqGroupId], references: [id])
+  verifiedBy         User?              @relation("DestinationVerifier", fields: [verifiedById], references: [id])
+
+  @@unique([locale, slug])
+  @@unique([destinationId, locale])
+  @@index([locale, workflowStatus])
+  @@index([workflowStatus, publishedAt])
+}
+
+// ── Editorial: categories / tags / authors / media ───────────────────────────
+
+// Destination gallery — references the existing MediaAsset system (no second image system).
+model DestinationMedia {
+  id            String      @id @default(cuid())
+  destinationId String
+  assetId       String
+  position      Int         @default(0)
+  destination   Destination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+  asset         MediaAsset  @relation("DestinationGallery", fields: [assetId], references: [id])
+
+  @@unique([destinationId, assetId])
+  @@index([destinationId, position])
+}
+
+model Category {
+  id           String    @id @default(cuid())
+  key          String    @unique // stable key, e.g. "morocco.family"
+  parentId     String?   // root categories act as Sections; children are Categories (spec §8)
+  isActive     Boolean   @default(true) // reference-safe archive (deletion blocked when referenced)
+  position     Int       @default(0)
+  parent       Category? @relation("CategoryTree", fields: [parentId], references: [id])
+  children     Category[] @relation("CategoryTree")
+  translations CategoryTranslation[]
+  articles     Article[]
+}
+
+model CategoryTranslation {
+  id          String   @id @default(cuid())
+  categoryId  String
+  locale      String
+  name        String
+  slug        String
+  description String?
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, locale])
+  @@unique([locale, slug])
+}
+
+// Editorial topics (Phase 3, spec §8): sections + categories live in the
+// existing Category tree; tags in Tag. Topics add cross-cutting editorial
+// themes that can relate BOTH articles and destinations. Editorial control:
+// created by admins/editors only; never mass-generated.
+model Topic {
+  id           String             @id @default(cuid())
+  key          String             @unique
+  isActive     Boolean            @default(true)
+  position     Int                @default(0)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  translations TopicTranslation[]
+  articles     ArticleTopic[]
+  destinations DestinationTopic[]
+}
+
+model TopicTranslation {
+  id      String @id @default(cuid())
+  topicId String
+  locale  String
+  name    String
+  slug    String
+  topic   Topic  @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([topicId, locale])
+  @@unique([locale, slug])
+}
+
+model ArticleTopic {
+  articleId String
+  topicId   String
+  position  Int    @default(0)
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  topic     Topic   @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@id([articleId, topicId])
+  @@index([topicId])
+}
+
+model DestinationTopic {
+  destinationId String
+  topicId       String
+  destination   Destination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+  topic         Topic       @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@id([destinationId, topicId])
+  @@index([topicId])
+}
+
+model Tag {
+  id           String          @id @default(cuid())
+  key          String          @unique
+  translations TagTranslation[]
+  articles     ArticleTag[]
+}
+
+model TagTranslation {
+  id       String   @id @default(cuid())
+  tagId    String
+  locale   String
+  name     String
+  slug     String
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([tagId, locale])
+}
+
+model Author {
+  id           String   @id @default(cuid())
+  key          String   @unique // stable editorial key, e.g. "salma-benali"
+  slug         String   @unique // public page slug (Phase 2)
+  name         String
+  photoAssetId String?
+  email        String?
+  socials      Json?
+  isActive     Boolean  @default(true)
+  user         User?
+  photo        MediaAsset? @relation(fields: [photoAssetId], references: [id])
+  articles     Article[]
+  articleUpdates Article[] @relation("ArticleUpdatedBy")
+  translations AuthorTranslation[]
+}
+
+model AuthorTranslation {
+  id        String  @id @default(cuid())
+  authorId  String
+  locale    String
+  role      String?
+  biography String?
+  expertise String[]
+  author    Author  @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@unique([authorId, locale])
+}
+
+model MediaAsset {
+  id             String   @id @default(cuid())
+  filename       String // original filename (internal metadata)
+  storageKey     String   @unique // opaque storage key — public URL never exposes the original path
+  mimeType       String // validated image MIME (no SVG uploads in Phase 2)
+  sizeBytes      Int
+  width          Int?
+  height         Int?
+  url            String // public URL (served through /media/[key])
+  credit         String? // e.g. photographer line for display
+  sourceUrl      String? // original source (internal attribution)
+  license        String? // e.g. "CC BY 4.0", "Owned", "AI-generated"
+  aiGenerated    Boolean  @default(false) // internal disclosure — never presented as real photography
+  archived       Boolean  @default(false)
+  uploadedById   String?
+  uploadedBy     User?    @relation(fields: [uploadedById], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  translations   MediaAssetTranslation[]
+  authors        Author[]
+  articles       Article[] // articles using this asset as hero image
+  ogTranslations ArticleTranslation[] @relation("TranslationOgImage")
+  destinationHeroes   Destination[]      @relation("DestinationHero")
+  destinationGallery  DestinationMedia[] @relation("DestinationGallery")
+
+  @@index([mimeType])
+  @@index([archived])
+}
+
+model MediaAssetTranslation {
+  id       String     @id @default(cuid())
+  assetId  String
+  locale   String
+  alt      String // alt text is part of the localization architecture
+  caption  String?
+  asset    MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([assetId, locale])
+}
+
+// ── Articles ─────────────────────────────────────────────────────────────────
+
+// Base article: locale-invariant facts, relations and the translation-group
+// anchor. ALL editorial workflow, SEO controls and publishing state live on
+// ArticleTranslation so every locale proceeds independently.
+model Article {
+  id                 String             @id @default(cuid())
+  translationGroupId String?
+  categoryId         String?
+  authorId           String
+  updatedById        String?
+  heroImageId        String?
+  destinationId      String?
+  cityId             String?
+  eventId            String?
+  editionId          String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  category           Category?          @relation(fields: [categoryId], references: [id])
+  author             Author             @relation(fields: [authorId], references: [id])
+  updatedBy          Author?            @relation("ArticleUpdatedBy", fields: [updatedById], references: [id])
+  heroImage          MediaAsset?        @relation(fields: [heroImageId], references: [id])
+  destination        Destination?       @relation(fields: [destinationId], references: [id])
+  city               City?              @relation(fields: [cityId], references: [id])
+  event              SportEvent?        @relation(fields: [eventId], references: [id])
+  edition            SportEventEdition? @relation(fields: [editionId], references: [id])
+  translations       ArticleTranslation[]
+  tags               ArticleTag[]
+  offers             ArticleOffer[]
+  destinationLinks   ArticleDestination[]
+  topics             ArticleTopic[]
+
+  @@index([categoryId])
+  @@index([authorId])
+  @@index([updatedAt])
+}
+
+// One independently-editable, independently-publishable language version.
+model ArticleTranslation {
+  id                 String             @id @default(cuid())
+  articleId          String
+  locale             String
+  title              String
+  slug               String
+  h1                 String?
+  excerpt            String?
+  blocks             Json // structured content blocks (src/lib/cms/blocks.ts) — portable, never an opaque blob
+  seoTitle           String?
+  metaDescription    String?
+  canonicalOverride  String?
+  noindex            Boolean            @default(false)
+  ogImageId          String?
+  faqGroupId         String?
+  readingMinutes     Int?
+  // Editorial workflow (spec §6) — human-gated; see lib/cms/workflow.ts
+  workflowStatus     WorkflowStatus     @default(DRAFT)
+  scheduledAt        DateTime?
+  publishedAt        DateTime?
+  archivedAt         DateTime?
+  // Verification of time-sensitive facts (spec §7)
+  verificationStatus VerificationStatus?
+  lastVerifiedAt     DateTime?
+  verifiedById       String?
+  verificationNotes  String?
+  factCheckNotes     String?
+  reviewNotes        String?
+  warningEnabled     Boolean            @default(false)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  article            Article            @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  ogImage            MediaAsset?        @relation("TranslationOgImage", fields: [ogImageId], references: [id])
+  faqGroup           FaqGroup?          @relation(fields: [faqGroupId], references: [id])
+  verifiedBy         User?              @relation("TranslationVerifier", fields: [verifiedById], references: [id])
+  revisions          ArticleRevision[]
+  transitions        ArticleTransition[]
+  outgoingLinks      ContentLink[]      @relation("LinkOwner")
+  incomingLinks      ContentLink[]      @relation("LinkTarget")
+
+  @@unique([locale, slug])
+  @@unique([articleId, locale])
+  @@index([locale, workflowStatus])
+  @@index([workflowStatus, scheduledAt])
+  @@index([workflowStatus, publishedAt])
+  @@index([verificationStatus, lastVerifiedAt])
+  @@index([updatedAt])
+}
+
+// Explicit, editorially-managed article ↔ destination relationships (Phase 3).
+// One PRIMARY destination per article + optionally several SECONDARY ones.
+// Never inferred from slugs; never mass-generated.
+model ArticleDestination {
+  id            String      @id @default(cuid())
+  articleId     String
+  destinationId String
+  role          String      @default("SECONDARY") // PRIMARY | SECONDARY
+  position      Int         @default(0)
+  article       Article     @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  destination   Destination @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, destinationId])
+  @@index([destinationId, role])
+  @@index([articleId])
+}
+
+model ArticleTag {
+  articleId String
+  tagId     String
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([articleId, tagId])
+}
+
+// Structured revision snapshot (spec §12): recoverable history with restore.
+// Limitation (documented): structured snapshots + restore; no visual diff in Phase 2.
+model ArticleRevision {
+  id            String             @id @default(cuid())
+  translationId String
+  status        WorkflowStatus // workflow status at snapshot time
+  snapshot      Json // {title, slug, h1, excerpt, blocks, seo…, faq}
+  note          String?
+  createdById   String?
+  createdBy     User?              @relation(fields: [createdById], references: [id])
+  createdAt     DateTime           @default(now())
+  translation   ArticleTranslation @relation(fields: [translationId], references: [id], onDelete: Cascade)
+
+  @@index([translationId, createdAt])
+}
+
+// Audit log of every workflow transition: who/when/from/to/notes (spec §6).
+model ArticleTransition {
+  id            String             @id @default(cuid())
+  translationId String
+  fromStatus    WorkflowStatus?
+  toStatus      WorkflowStatus
+  userId        String?
+  user          User?              @relation(fields: [userId], references: [id])
+  notes         String?
+  createdAt     DateTime           @default(now())
+  translation   ArticleTranslation @relation(fields: [translationId], references: [id], onDelete: Cascade)
+
+  @@index([translationId, createdAt])
+}
+
+// Editorial internal links between content, managed per translated page.
+model ContentLink {
+  id                         String              @id @default(cuid())
+  ownerType                  String              @default("ArticleTranslation")
+  ownerId                    String? // null for destination-curated links (Phase 3)
+  anchorText                 String
+  targetUrl                  String?
+  targetArticleTranslationId String?
+  targetDestinationId        String? // Phase 3: contextual links article↔destination / destination↔destination
+  ownerDestinationTranslationId String? // Phase 3: plain reference (no FK) when the link is curated FROM a destination — polymorphic-owner pattern, like FaqGroup.ownerId
+  rel                        String?
+  position                   Int     @default(0)
+  target                     ArticleTranslation? @relation("LinkTarget", fields: [targetArticleTranslationId], references: [id])
+  targetDestination          Destination?        @relation("LinkDestinationTarget", fields: [targetDestinationId], references: [id])
+  owner                      ArticleTranslation? @relation("LinkOwner", fields: [ownerId], references: [id], onDelete: Restrict, onUpdate: Cascade) // Phase 2 semantics preserved verbatim
+
+  @@index([ownerType, ownerId])
+  @@index([ownerDestinationTranslationId])
+}
+
+// ── FAQ (attachable; articles reference groups via ArticleTranslation.faqGroupId)
+
+model FaqGroup {
+  id               String               @id @default(cuid())
+  ownerType        String?
+  ownerId          String?
+  items            FaqItem[]
+  translations     ArticleTranslation[]
+  destinationTranslations DestinationTranslation[] @relation("DestinationFaq")
+  createdAt        DateTime             @default(now())
+}
+
+model FaqItem {
+  id           String    @id @default(cuid())
+  groupId      String
+  position     Int       @default(0)
+  group        FaqGroup  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  translations FaqItemTranslation[]
+}
+
+model FaqItemTranslation {
+  id       String  @id @default(cuid())
+  itemId   String
+  locale   String
+  question String
+  answer   String
+  item     FaqItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, locale])
+}
+
+// ── Redirects (Phase 2, spec §19): per-locale SEO redirects ──────────────────
+// Applied by src/middleware.ts with an in-process TTL cache; loops are
+// prevented at creation time and re-checked at serve time.
+
+model Redirect {
+  id              String   @id @default(cuid())
+  locale          String
+  sourcePath      String // e.g. /guides/old-slug/
+  destinationPath String // internal path, same locale scope
+  statusCode      Int      @default(301)
+  active          Boolean  @default(true)
+  createdById     String?
+  createdBy       User?    @relation(fields: [createdById], references: [id])
+  createdAt       DateTime @default(now())
+  lastHitAt       DateTime?
+
+  @@unique([locale, sourcePath])
+  @@index([locale, active])
+}
+
+// ── Sports travel (event-agnostic — later phase data) ────────────────────────
+
+model SportEvent {
+  id           String               @id @default(cuid())
+  key          String               @unique
+  sport        String
+  editions     SportEventEdition[]
+  translations SportEventTranslation[]
+  articles     Article[]
+}
+
+model SportEventTranslation {
+  id          String     @id @default(cuid())
+  eventId     String
+  locale      String
+  name        String
+  description String?
+  event       SportEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, locale])
+}
+
+model SportEventEdition {
+  id          String      @id @default(cuid())
+  eventId     String
+  label       String
+  year        Int?
+  startDate   DateTime?
+  endDate     DateTime?
+  event       SportEvent  @relation(fields: [eventId], references: [id])
+  hostCountries SportEventEditionHost[]
+  venues      EditionVenue[]
+  articles    Article[]
+}
+
+model SportEventEditionHost {
+  editionId String
+  countryId String
+  edition   SportEventEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  country   Country           @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@id([editionId, countryId])
+}
+
+model Venue {
+  id         String  @id @default(cuid())
+  cityId     String?
+  name       String
+  capacity   Int?
+  openedYear Int?
+  city       City?   @relation(fields: [cityId], references: [id])
+  editions   EditionVenue[]
+}
+
+model EditionVenue {
+  editionId String
+  venueId   String
+  role      String?
+  edition   SportEventEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  venue     Venue             @relation(fields: [venueId], references: [id], onDelete: Cascade)
+
+  @@id([editionId, venueId])
+}
+
+// ── Study abroad (later phase data) ──────────────────────────────────────────
+
+model StudyDestination {
+  id           String                @id @default(cuid())
+  countryId    String                @unique
+  country      Country               @relation(fields: [countryId], references: [id])
+  translations StudyDestinationTranslation[]
+  universities University[]
+}
+
+model StudyDestinationTranslation {
+  id                String           @id @default(cuid())
+  studyDestinationId String
+  locale            String
+  slug              String
+  intro             String?
+  seoTitle          String?
+  metaDescription   String?
+  studyDestination  StudyDestination @relation(fields: [studyDestinationId], references: [id], onDelete: Cascade)
+
+  @@unique([studyDestinationId, locale])
+  @@unique([locale, slug])
+}
+
+model University {
+  id            String          @id @default(cuid())
+  countryId     String
+  cityId        String?
+  foundedYear   Int?
+  studyDestination StudyDestination? @relation(fields: [countryId], references: [id])
+  translations  UniversityTranslation[]
+}
+
+model UniversityTranslation {
+  id           String     @id @default(cuid())
+  universityId String
+  locale       String
+  name         String
+  slug         String
+  overview     String?
+  tuitionNote  String?
+  university   University @relation(fields: [universityId], references: [id], onDelete: Cascade)
+
+  @@unique([locale, slug])
+  @@unique([universityId, locale])
+}
+
+model Scholarship {
+  id           String                 @id @default(cuid())
+  countryId    String?
+  amountNote   String?
+  deadline     DateTime?
+  translations ScholarshipTranslation[]
+}
+
+model ScholarshipTranslation {
+  id            String      @id @default(cuid())
+  scholarshipId String
+  locale        String
+  name          String
+  description   String?
+  eligibility   String?
+  scholarship   Scholarship @relation(fields: [scholarshipId], references: [id], onDelete: Cascade)
+
+  @@unique([scholarshipId, locale])
+}
+
+// ── Travel updates (time-sensitive; later phase UI) ──────────────────────────
+
+model TravelUpdate {
+  id                 String             @id @default(cuid())
+  translationGroupId String?
+  changeType         UpdateType
+  countryId          String?
+  publishedAt        DateTime?
+  effectiveFrom      DateTime?
+  expiresAt          DateTime?
+  sourceUrl          String?
+  verificationStatus VerificationStatus @default(NEEDS_REVIEW)
+  lastVerifiedAt     DateTime?
+  translations       TravelUpdateTranslation[]
+}
+
+model TravelUpdateTranslation {
+  id              String       @id @default(cuid())
+  travelUpdateId  String
+  locale          String
+  title           String
+  slug            String
+  summary         String?
+  body            String       @db.Text
+  travelUpdate    TravelUpdate @relation(fields: [travelUpdateId], references: [id], onDelete: Cascade)
+
+  @@unique([locale, slug])
+  @@unique([travelUpdateId, locale])
+}
+
+// ── Monetization (provider-agnostic; Phase 3+) ───────────────────────────────
+
+model AffiliateProvider {
+  id      String @id @default(cuid())
+  key     String @unique
+  name    String
+  website String?
+  offers  AffiliateOffer[]
+}
+
+model AffiliateOffer {
+  id              String            @id @default(cuid())
+  providerId      String
+  vertical        OfferVertical
+  title           String
+  urlTemplate     String
+  trackingParams  Json?
+  commissionModel String?
+  locales         String?
+  isActive        Boolean           @default(true)
+  startsAt        DateTime?
+  endsAt          DateTime?
+  provider        AffiliateProvider @relation(fields: [providerId], references: [id])
+  articles        ArticleOffer[]
+}
+
+model ArticleOffer {
+  articleId String
+  offerId   String
+  position  Int     @default(0)
+  context   String?
+  article   Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  offer     AffiliateOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  @@id([articleId, offerId])
+}
+
+model AdProvider {
+  id   String @id @default(cuid())
+  key  String @unique
+  name String
+  slots AdSlot[]
+}
+
+model AdSlot {
+  id             String      @id @default(cuid())
+  key            String      @unique
+  name           String
+  placement      AdPlacement
+  formats        Json
+  providerId     String?
+  providerUnitId String?
+  isActive       Boolean     @default(true)
+  notes          String?
+  provider       AdProvider? @relation(fields: [providerId], references: [id])
+}
+
+// ── Search (Phase 4): privacy-conscious query analytics ─────────────────────
+// Stores ONLY the query string and a coarse outcome (result count). No user
+// identifiers, no IP, no session data. `normalized` is the locale-safe
+// matching form, used solely for aggregating identical queries in the admin
+// Search Insights page. See src/lib/search/ for the provider architecture.
+
+model SearchQueryEvent {
+  id          String   @id @default(cuid())
+  locale      String
+  query       String // sanitized display form (whitespace-collapsed, ≤ 100 chars)
+  normalized  String // normalized matching form (aggregation key)
+  resultCount Int
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt]) // insights window (last 30 days)
+  @@index([normalized, locale]) // group-by for top/no-result searches
+}
+
+// ── Audience / tools / quiz (schema-ready; later phases) ─────────────────────
+
+model NewsletterSubscriber {
+  id        String             @id @default(cuid())
+  email     String
+  locale    String
+  status    SubscriptionStatus @default(PENDING)
+  source    String?
+  createdAt DateTime           @default(now())
+
+  @@unique([email, locale])
+}
+
+model QuizSubmission {
+  id        String   @id @default(cuid())
+  locale    String
+  answers   Json
+  createdAt DateTime @default(now())
+}

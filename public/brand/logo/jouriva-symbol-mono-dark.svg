@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-labelledby="jt jd">
+  <title id="jt">JOURIVA symbol — monochrome dark</title>
+  <desc id="d">Single-colour charcoal version of the JOURIVA symbol for light backgrounds and one-colour reproduction.</desc>
+  <!-- Monochrome DARK (charcoal) — one-colour reproduction on light backgrounds. -->
+  <g fill="#1A1A1A">
+    <path d="M71 34H85V74C85 89.5 75.5 98.5 62.5 98.5C51.5 98.5 42.5 92.3 38.5 82.3L38.5 73.5L52 69.5C53.6 75.6 57.3 78.6 62.5 78.6C68.7 78.6 71 74.6 71 68.5Z"/>
+    <path fill-rule="evenodd" d="M78 9L80.3 14.46L85.78 12.22L83.54 17.7L89 20L83.54 22.3L85.78 27.78L80.3 25.54L78 31L75.7 25.54L70.22 27.78L72.46 22.3L67 20L72.46 17.7L70.22 12.22L75.7 14.46Z M79.15 17.23L80.77 18.85L80.77 21.15L79.15 22.77L76.85 22.77L75.23 21.15L75.23 18.85L76.85 17.23Z"/>
+  </g>
+</svg>
