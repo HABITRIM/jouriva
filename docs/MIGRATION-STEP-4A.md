@@ -3,6 +3,29 @@
 **Real S3-compatible Storage Adapter (Supabase Storage)**
 Date: 2026-09-12 · Status: **IMPLEMENTED + VERIFIED (offline checks PASS; live round-trip pending credentials in this workspace)** · Phases 1–4 frozen and untouched.
 
+> **REPOSITORY-STATE CORRECTION (2026-09-12, owner-reported inconsistency resolved).**
+> The owner reported `scripts/verify-storage.ts` absent from the GitHub
+> repository and their local checkout. Investigation (public raw-file probes
+> of `github.com/HABITRIM/jouriva`) confirmed the cause: **the GitHub Source
+> of Truth was 2 commits behind the approved workspace** — GitHub `main` was
+> at `dd4d7f2` (Migration Step 2 era: Step-2 doc present, Step-3 doc absent),
+> so it contained **neither** this adapter **nor** the dependency, script, or
+> this document. Nothing was lost or misdocumented: the workspace repository
+> (branch `main`, commit `b2fb11b`, clean tree) contains all three Step-4A
+> artifacts, verified byte-present in commit `b2fb11b`:
+> - `src/lib/storage.ts` — real `S3Storage` adapter (S3 command usage verified in-tree)
+> - `package.json` / `package-lock.json` — `@aws-sdk/client-s3@^3.1135.0`
+> - `scripts/verify-storage.ts` — the verification suite (re-verified: offline
+>   checks, credential auto-detection from the environment only, zero
+>   credential-print sites, byte-equality round-trip with guaranteed `finally`
+>   cleanup, no CMS/DB records)
+> `scripts/verify-storage.ts` was therefore **not recreated** — it already
+> existed at HEAD; recreating it would have been a duplicate. The correction
+> consists of this documentation note, the full verification battery re-run
+> (below), and a refreshed full-history `jouriva-baseline.bundle` delivered
+> so the owner can fast-forward GitHub (no force push required — `dd4d7f2` is
+> an ancestor of the new head).
+
 ## Objective
 
 Replace the `S3Storage` placeholder in `src/lib/storage.ts` (throwing stub) with a real, production-safe S3-compatible adapter for Supabase Storage's S3 gateway, preserving the existing `StorageProvider` abstraction exactly and keeping every caller (`storage().put/get/delete/exists`) unchanged.
