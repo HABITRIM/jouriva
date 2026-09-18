@@ -8,9 +8,11 @@ import { randomBytes } from "node:crypto";
  *
  * REAL persistence via the configured provider — no fake uploads.
  *  - `local` (default): files on disk under MEDIA_STORAGE_DIR, served through
- *    /media/[key] with metadata from the database. Production migration path:
- *    implement `S3Storage` against any S3-compatible object store and set
- *    MEDIA_STORAGE_PROVIDER=s3 (+ credentials). The rest of the system only
+ *    /media/[key] with metadata from the database. Development driver.
+ *  - `s3` (production/staging): any S3-compatible object store — Supabase
+ *    Storage S3 in staging — via the real S3Storage adapter below
+ *    (MEDIA_STORAGE_PROVIDER=s3 + S3_BUCKET/S3_ENDPOINT/S3_ACCESS_KEY_ID/
+ *    S3_SECRET_ACCESS_KEY; optional S3_REGION). The rest of the system only
  *    ever talks to this interface.
  *
  * Storage keys are opaque (random + extension) so public URLs never expose
@@ -91,28 +93,157 @@ class LocalStorage implements StorageProvider {
 }
 
 /**
- * S3-compatible storage — implemented when production object storage is
- * provisioned (infrastructure dependency, documented in docs/11-media.md).
- * Intentionally NOT a fake success path: using it without credentials throws.
+ * Opaque storage-key generation (shared contract): timestamp + random bytes
+ * + extension. Original filenames are never part of a storage key.
+ */
+export function generateStorageKey(mime: string): string {
+  return `${Date.now().toString(36)}${randomBytes(8).toString("hex")}.${extFromMime(mime)}`;
+}
+
+/**
+ * S3 object keys are flat by design — mirror LocalStorage's basename guard
+ * so a crafted key can never address a path outside the flat key space.
+ */
+function objectKey(key: string): string {
+  const flat = key.split("/").pop() ?? "";
+  if (!flat || flat.startsWith(".")) throw new Error("Invalid storage key.");
+  return flat;
+}
+
+/**
+ * Required S3 configuration. Fails closed with a message that names the
+ * missing variables — never their values.
+ */
+function s3Config(): {
+  bucket: string;
+  endpoint: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  region: string;
+} {
+  const bucket = process.env.S3_BUCKET;
+  const endpoint = process.env.S3_ENDPOINT;
+  const accessKeyId = process.env.S3_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.S3_SECRET_ACCESS_KEY;
+  if (!bucket || !endpoint || !accessKeyId || !secretAccessKey) {
+    throw new Error(
+      "MEDIA_STORAGE_PROVIDER=s3 requires S3_BUCKET, S3_ENDPOINT, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY — configure object storage first (docs/11-media.md, docs/MIGRATION-STEP-4A.md)."
+    );
+  }
+  // S3_REGION is optional (not a required project variable). It pins the
+  // SigV4 signing region; AWS's standard default applies when unset.
+  return { bucket, endpoint, accessKeyId, secretAccessKey, region: process.env.S3_REGION ?? "us-east-1" };
+}
+
+function s3Bucket(): string {
+  return s3Config().bucket;
+}
+
+type S3ClientLike = import("@aws-sdk/client-s3").S3Client;
+let cachedS3: { key: string; client: S3ClientLike } | null = null;
+
+/** Lazily constructed, module-cached S3 client (path-style, Supabase-compatible). */
+async function s3Client(): Promise<S3ClientLike> {
+  const { S3Client } = await import("@aws-sdk/client-s3");
+  const cfg = s3Config();
+  // Cache key uses non-secret identifiers only (endpoint/region/key id).
+  const cacheKey = `${cfg.endpoint}|${cfg.region}|${cfg.accessKeyId}`;
+  if (cachedS3?.key === cacheKey) return cachedS3.client;
+  const client = new S3Client({
+    region: cfg.region,
+    endpoint: cfg.endpoint,
+    forcePathStyle: true,
+    credentials: { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey },
+  });
+  cachedS3 = { key: cacheKey, client };
+  return client;
+}
+
+/**
+ * Public object URL for the configured PUBLIC bucket, derived from
+ * S3_ENDPOINT (never hardcoded): Supabase endpoints map to the public
+ * object URL of the same project; other S3-compatible providers get a
+ * path-style public URL fallback.
+ */
+function s3PublicUrl(key: string): string {
+  const { bucket, endpoint } = s3Config();
+  const u = new URL(endpoint);
+  if (u.hostname.endsWith(".storage.supabase.co")) {
+    const base = `${u.protocol}//${u.hostname.replace(/\.storage\.supabase\.co$/, ".supabase.co")}/storage/v1/object/public`;
+    return `${base}/${bucket}/${key}`;
+  }
+  return `${u.protocol}//${u.host}/${bucket}/${key}`;
+}
+
+/**
+ * S3-compatible storage — real implementation against any S3-compatible
+ * object store (staging: Supabase Storage S3 gateway, PUBLIC bucket).
+ *
+ * Security properties (MIGRATION-STEP-4A):
+ *  - credentials come exclusively from environment variables and are never
+ *    logged, echoed into errors, or exposed to client bundles (this module
+ *    is `server-only`);
+ *  - errors never include values — only variable NAMES;
+ *  - storage keys stay opaque (random), so original filenames and bucket
+ *    layout are never exposed in public URLs.
+ *
+ * Public URLs are derived from S3_ENDPOINT: on a `*.storage.supabase.co`
+ * endpoint they map to the Supabase public object URL of the configured
+ * PUBLIC bucket; any other S3-compatible provider falls back to a path-style
+ * public URL (portability). No project identifier is hardcoded.
  */
 class S3Storage implements StorageProvider {
   readonly name = "s3";
+
+  /** Fail fast at construction: verifies all required variables are present.
+   *  Errors name the missing variables — never their values. */
   constructor() {
-    if (!process.env.S3_BUCKET || !process.env.S3_ENDPOINT) {
-      throw new Error(
-        "MEDIA_STORAGE_PROVIDER=s3 requires S3_BUCKET, S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY — configure production object storage first (docs/11-media.md)."
-      );
+    s3Config();
+  }
+
+  async put(data: Buffer, mime: string): Promise<StoredObject> {
+    const key = generateStorageKey(mime);
+    const { PutObjectCommand } = await import("@aws-sdk/client-s3");
+    const client = await s3Client();
+    await client.send(
+      new PutObjectCommand({ Bucket: s3Bucket(), Key: key, Body: data, ContentType: mime })
+    );
+    return { key, url: s3PublicUrl(key) };
+  }
+
+  async get(key: string): Promise<Buffer | null> {
+    try {
+      const { GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const client = await s3Client();
+      const res = await client.send(new GetObjectCommand({ Bucket: s3Bucket(), Key: objectKey(key) }));
+      const bytes = await res.Body?.transformToByteArray();
+      return bytes ? Buffer.from(bytes) : null;
+    } catch {
+      // Missing object (or unreadable) → null. SDK errors are never re-thrown
+      // to callers — same contract as LocalStorage.get.
+      return null;
     }
   }
-  async put(): Promise<StoredObject> {
-    throw new Error("S3 storage adapter ships with the production deployment phase (docs/11-media.md)");
+
+  async delete(key: string): Promise<void> {
+    try {
+      const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+      const client = await s3Client();
+      await client.send(new DeleteObjectCommand({ Bucket: s3Bucket(), Key: objectKey(key) }));
+    } catch {
+      // Idempotent: an already-deleted/missing object is not a failure.
+    }
   }
-  async get(): Promise<Buffer | null> {
-    return null;
-  }
-  async delete(): Promise<void> {}
-  async exists(): Promise<boolean> {
-    return false;
+
+  async exists(key: string): Promise<boolean> {
+    try {
+      const { HeadObjectCommand } = await import("@aws-sdk/client-s3");
+      const client = await s3Client();
+      await client.send(new HeadObjectCommand({ Bucket: s3Bucket(), Key: objectKey(key) }));
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
