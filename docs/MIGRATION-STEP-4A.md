@@ -1,7 +1,7 @@
 # JOURIVA — Migration Step 4A
 
 **Real S3-compatible Storage Adapter (Supabase Storage)**
-Date: 2026-09-12 · Status: **IMPLEMENTED + VERIFIED (offline checks PASS; live round-trip pending credentials in this workspace)** · Phases 1–4 frozen and untouched.
+Date: 2026-09-12 · Status: **IMPLEMENTED + VERIFIED — CLOSED (offline checks PASS in the workspace; live Supabase S3 round-trip PASS, executed owner-side 2026-09-19 — see "Live round-trip closure")** · Phases 1–4 frozen and untouched.
 
 > **REPOSITORY-STATE CORRECTION (2026-09-12, owner-reported inconsistency resolved).**
 > The owner reported `scripts/verify-storage.ts` absent from the GitHub
@@ -79,6 +79,20 @@ New focused suite `scripts/verify-storage.ts` (runs with `npx tsx scripts/verify
 - ✓ keys match the opaque pattern; keys are random; keys carry no filenames/directories
 - • **LIVE ROUND-TRIP SKIPPED — S3 credentials are not present in this workspace environment** (by design; never prompted for or accepted via chat). The suite auto-detects credentials and performs the real round-trip (upload 1×1 PNG → `exists()` → byte-equal `get()` → `delete()` → `exists() === false`, cleanup guaranteed in `finally`, no CMS records) the moment it runs in a credential-configured environment.
 
+### Live round-trip closure (2026-09-19)
+
+The owner executed the verification suite in their credential-configured
+environment — from the **GitHub-synced `jouriva-sync-new` clone** — and
+reported the **live Supabase S3 round-trip: PASSED**. A passing run
+demonstrates, against the real `jouriva-media` bucket, the full contract:
+`put()` of a tiny temporary 1×1 PNG with an opaque key and correct content
+type → `exists() === true` → `get()` returns byte-identical data →
+`delete()` → `exists() === false`, with guaranteed cleanup and **no
+CMS/database records created**. No credential values, endpoint internals,
+or bucket keys were emitted by the suite or are recorded here or anywhere in
+the repository; adapter behavior, `StorageProvider`, and `LocalStorage` are
+unchanged by this closure note. **Migration Step 4A is closed.**
+
 ## Verification results
 
 | Check | Result |
@@ -94,7 +108,7 @@ Not run (per instructions): `seed.ts`, `seed-destinations.ts`, `prisma db push`,
 
 ## Limitations
 
-1. **Live Supabase round-trip not executed here** — the workspace has no S3 credentials (owner keeps them locally; the task forbids transferring secrets through chat). **Next owner action:** in a credential-configured environment (this workspace via `.env`, or the owner's machine), run `NODE_OPTIONS=--conditions=react-server npx tsx scripts/verify-storage.ts` and expect the live round-trip lines plus `STORAGE VERIFICATION PASSED`. Only after that pass should `seed.ts` be run (Step 4B/5 territory — not started).
+1. **Live Supabase round-trip — RESOLVED (2026-09-19).** The workspace itself never held S3 credentials (owner keeps them locally; the task forbids transferring secrets through chat), and the live verification was executed owner-side from the GitHub-synced `jouriva-sync-new` clone: **PASSED** (see "Live round-trip closure"). The storage adapter is therefore verified offline (workspace) and live (owner environment). `seed.ts` remains intentionally **not run** — seeding is a decision for the next migration step, not part of 4A.
 2. `MEDIA_MAX_MB` upload-size governance is enforced at the CMS layer exactly as before (unchanged); serverless body-size limits remain a future Vercel-step consideration (documented in the portability audit).
 3. The public-URL derivation rule is Supabase-specific for `*.storage.supabase.co` endpoints with a documented generic fallback — portability to another S3-compatible provider is preserved but its public-URL rule would be reviewed at migration time.
 
