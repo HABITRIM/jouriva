@@ -1,23 +1,28 @@
 /**
  * Seeds the JOURIVA CMS with its initial editorial state.
  *
- * REAL persistence only: images are ingested through the same storage
- * contract as the media library (opaque keys under MEDIA_STORAGE_DIR),
- * users get real scrypt password hashes, articles are PUBLISHED with
- * audit transitions.
+ * REAL persistence only: images are ingested through the SAME storage
+ * contract as the media library — the configured StorageProvider
+ * (`local` driver in development, S3-compatible object storage such as
+ * Supabase in staging via MEDIA_STORAGE_PROVIDER=s3) — opaque provider
+ * keys, provider-generated public URLs. Users get real scrypt password
+ * hashes, articles are PUBLISHED with audit transitions.
  *
  * Dev credentials (documented in docs/12-auth-and-permissions.md — dev only):
  *   admin@jouriva.test / editor@jouriva.test / author@jouriva.test /
  *   reviewer@jouriva.test   — password: jouriva-dev-2026
  *
- * Run: npx tsx scripts/seed.ts
+ * Run: NODE_OPTIONS=--conditions=react-server npx tsx scripts/seed.ts
+ * (the react-server condition lets tsx resolve the real `server-only`
+ * marker exactly as Next.js does inside the app build)
  * Idempotent: re-running skips existing rows (natural keys).
  */
 import "dotenv/config";
 import { PrismaClient, Prisma } from "@prisma/client";
 import { randomBytes, scryptSync } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { storage } from "../src/lib/storage";
 import sharp from "sharp";
 
 const prisma = new PrismaClient();
@@ -33,23 +38,26 @@ function b(type: string, extra: Record<string, unknown>): Record<string, unknown
 }
 
 async function ingestImage(file: string, alt: { en: string; es: string; ar: string }) {
-  const dir = process.env.MEDIA_STORAGE_DIR ?? path.join(process.env.HOME ?? "", ".pg", "jouriva-uploads");
-  await mkdir(dir, { recursive: true });
   const existing = await prisma.mediaAsset.findFirst({ where: { filename: file, credit: "AI-generated placeholder photography" } });
   if (existing) return existing;
 
   const buf = await readFile(path.join(process.cwd(), "public", "images", file));
   const meta = await sharp(buf).metadata();
   const ext = path.extname(file).toLowerCase() || ".jpg";
-  const key = `${Date.now().toString(36)}${randomBytes(8).toString("hex")}${ext}`;
-  await writeFile(path.join(dir, key), buf);
+  const mime = `image/${ext === ".jpg" || ext === ".jpeg" ? "jpeg" : ext.replace(".", "")}`;
+
+  // Persist through the configured StorageProvider (MIGRATION-STEP-4B-H1):
+  // `local` driver in development, S3-compatible object storage in staging.
+  // The provider generates the opaque key and the public URL — the seed
+  // never touches MEDIA_STORAGE_DIR and never constructs /media/<key>.
+  const stored = await storage().put(buf, mime);
 
   return prisma.mediaAsset.create({
     data: {
-      storageKey: key,
-      url: `/media/${key}`,
+      storageKey: stored.key,
+      url: stored.url,
       filename: file,
-      mimeType: `image/${ext === ".jpg" || ext === ".jpeg" ? "jpeg" : ext.replace(".", "")}`,
+      mimeType: mime,
       sizeBytes: buf.length,
       width: meta.width ?? null,
       height: meta.height ?? null,
